@@ -12,7 +12,60 @@ Write unit and end-to-end tests, diagnose bugs from failing test output, and use
 
 The back-end contains intentional bugs that you will discover and fix by writing tests, then use an AI agent to generate additional coverage.
 
-<!-- TODO diagram -->
+<h4>Diagram</h4>
+
+```mermaid
+sequenceDiagram
+    actor Developer
+    participant Local as "Local Machine<br/>(pytest)"
+    participant GitHub as "GitHub<br/>(origin)"
+    participant VM as "VM<br/>(Docker / FastAPI)"
+    participant AI as "AI Agent"
+
+    Note over Developer,VM: Part A: Unit Tests (Local)
+
+    Developer->>Local: uv run poe test-unit
+    Local-->>Developer: 3 passed
+
+    Developer->>Local: Add boundary test
+    Developer->>Local: uv run poe test-unit
+    Local-->>Developer: FAILED: assert 0 == 1
+
+    Developer->>Local: Fix bug (< to <=)
+    Developer->>Local: uv run poe test-unit
+    Local-->>Developer: 4 passed
+
+    Developer->>GitHub: git push
+    Developer->>VM: git pull, docker compose up app --build -d
+
+    Note over Developer,VM: Part B: End-to-End Tests (Local to VM)
+
+    Developer->>Local: uv run poe test-e2e
+    Local->>VM: GET /interactions/
+    VM-->>Local: 500 Internal Server Error
+    Local-->>Developer: FAILED: assert 500 == 200
+
+    Developer->>VM: docker compose logs app
+    VM-->>Developer: ResponseValidationError:<br/>timestamp field missing
+
+    Developer->>Local: Fix bug (timestamp to created_at)
+    Developer->>GitHub: git push
+    Developer->>VM: git pull, docker compose up app --build -d
+
+    Developer->>Local: uv run poe test-e2e
+    Local->>VM: GET /interactions/
+    VM-->>Local: 200 OK
+    Local-->>Developer: 5 passed
+
+    Note over Developer,AI: Part C: AI-Generated Tests
+
+    Developer->>AI: Generate 10 unit tests
+    AI-->>Developer: test_interactions_ai.py
+
+    Developer->>Developer: Review and curate
+    Developer->>Local: uv run poe test
+    Local-->>Developer: All tests passed
+```
 
 <h4>Table of contents</h4>
 
