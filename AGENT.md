@@ -38,4 +38,4 @@ Edit `.env.agent.secret`:
 - agent.py - Main CLI entry point
 - .env.agent.secret - LLM credentials (gitignored)
 - plans/task-1.md - Implementation plan
-- backend/tests/unit/test_agent.py - Regression tests
+- test_agent.py - Regression tests (also in backend/tests/unit/)
