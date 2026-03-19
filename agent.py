@@ -50,11 +50,20 @@ Always end wiki answers with: Source: wiki/filename.md#section-anchor
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env.agent.secret", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env.agent.secret", env_file_encoding="utf-8", extra="ignore")
 
-    llm_api_key: str
-    llm_api_base: str
+    llm_api_key: str = ""
+    llm_api_base: str = ""
     llm_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+
+    def __init__(self, **kwargs):
+        # Read from environment variables first, then from file
+        super().__init__(
+            llm_api_key=os.environ.get("LLM_API_KEY", ""),
+            llm_api_base=os.environ.get("LLM_API_BASE", ""),
+            llm_model=os.environ.get("LLM_MODEL", "nvidia/nemotron-3-super-120b-a12b:free"),
+            **kwargs
+        )
 
 
 class BackendSettings(BaseSettings):
@@ -473,15 +482,24 @@ def main() -> int:
     if len(sys.argv) < 2:
         print('Usage: uv run agent.py "<question>"', file=sys.stderr)
         return 1
-    
+
     question = sys.argv[1]
-    
+
     try:
         settings = Settings()
     except Exception as e:
         log_debug(f"Error loading settings: {e}")
         return 1
-    
+
+    # Check if LLM credentials are set
+    if not settings.llm_api_key:
+        log_debug("Error: LLM_API_KEY is not set. Set it in .env.agent.secret or environment variable.")
+        return 1
+
+    if not settings.llm_api_base:
+        log_debug("Error: LLM_API_BASE is not set. Set it in .env.agent.secret or environment variable.")
+        return 1
+
     try:
         result = run_agent_loop(question, settings)
         print(json.dumps(result))
