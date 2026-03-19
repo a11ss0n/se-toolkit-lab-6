@@ -58,7 +58,7 @@ def test_agent_list_files_tool():
     # Check that list_files was called
     tool_calls = output["tool_calls"]
     assert len(tool_calls) > 0, "Should have at least one tool call"
-    
+
     tool_names = [call.get("tool") for call in tool_calls]
     assert "list_files" in tool_names, f"Should use list_files tool, got: {tool_names}"
 
@@ -88,6 +88,66 @@ def test_agent_read_file_tool():
     # Check that read_file was called
     tool_calls = output["tool_calls"]
     assert len(tool_calls) > 0, "Should have at least one tool call"
-    
+
     tool_names = [call.get("tool") for call in tool_calls]
     assert "read_file" in tool_names, f"Should use read_file tool, got: {tool_names}"
+
+
+def test_agent_query_api_for_data():
+    """Test that agent uses query_api tool for data-dependent questions."""
+    project_root = Path(__file__).parent
+    agent_path = project_root / "agent.py"
+
+    result = subprocess.run(
+        [sys.executable, str(agent_path), "How many items are in the database?"],
+        capture_output=True,
+        text=True,
+        cwd=str(project_root),
+        timeout=120,
+    )
+
+    stdout = result.stdout.strip()
+    assert stdout, "stdout should not be empty"
+
+    output = json.loads(stdout)
+
+    # Check required fields
+    assert "answer" in output, "Output should have 'answer' field"
+    assert "tool_calls" in output, "Output should have 'tool_calls' field"
+
+    # Check that query_api was called for data-dependent question
+    tool_calls = output["tool_calls"]
+    assert len(tool_calls) > 0, "Should have at least one tool call"
+
+    tool_names = [call.get("tool") for call in tool_calls]
+    assert "query_api" in tool_names, f"Should use query_api tool for data questions, got: {tool_names}"
+
+
+def test_agent_read_file_for_system_facts():
+    """Test that agent uses read_file tool for system fact questions."""
+    project_root = Path(__file__).parent
+    agent_path = project_root / "agent.py"
+
+    result = subprocess.run(
+        [sys.executable, str(agent_path), "What Python web framework does this project use?"],
+        capture_output=True,
+        text=True,
+        cwd=str(project_root),
+        timeout=120,
+    )
+
+    stdout = result.stdout.strip()
+    assert stdout, "stdout should not be empty"
+
+    output = json.loads(stdout)
+
+    # Check required fields
+    assert "answer" in output, "Output should have 'answer' field"
+    assert "tool_calls" in output, "Output should have 'tool_calls' field"
+
+    # Check that read_file was called for system fact question
+    tool_calls = output["tool_calls"]
+    assert len(tool_calls) > 0, "Should have at least one tool call"
+
+    tool_names = [call.get("tool") for call in tool_calls]
+    assert "read_file" in tool_names, f"Should use read_file tool for system facts, got: {tool_names}"

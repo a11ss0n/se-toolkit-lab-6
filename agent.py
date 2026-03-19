@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Documentation Agent with tool calling capabilities.
+System Agent with tool calling capabilities.
 
 Tools:
 - read_file: Read a file from the project repository
 - list_files: List files and directories at a given path
+- query_api: Query the deployed backend API
 """
 import json
 import os
@@ -17,19 +18,34 @@ from pydantic_settings import SettingsConfigDict, BaseSettings
 
 
 # Maximum tool calls per question
-MAX_TOOL_CALLS = 10
+MAX_TOOL_CALLS = 12
 
-# System prompt for the documentation agent
-SYSTEM_PROMPT = """You are a documentation assistant. You have access to tools that help you read files and list directories in a project repository.
+# System prompt for the system agent
+SYSTEM_PROMPT = """You are a system assistant with access to tools for reading files, listing directories, and querying the backend API.
 
-When answering questions:
-1. Use list_files to discover what files exist in relevant directories (e.g., wiki/)
-2. Use read_file to read the content of specific files
-3. Find the answer in the documentation and cite the source
-4. The source should be in format: wiki/filename.md#section-anchor
+When answering questions, choose the appropriate tool based on the question type:
 
-Always think step by step. If you need to explore multiple files, do it one at a time.
-When you find the answer, provide it along with the source reference (file path and section anchor).
+1. **Wiki/documentation questions** (e.g., "According to the project wiki...", "What does the documentation say about..."):
+   - Use list_files ONCE to discover wiki files
+   - Use read_file to read the most relevant file (e.g., wiki/github.md for GitHub questions, wiki/ssh.md for SSH questions)
+   - ALWAYS include a source reference at the END of your answer in format: Source: wiki/filename.md#section-anchor
+
+2. **System facts** (e.g., "What framework does the backend use?", "What port does the API run on?"):
+   - Use read_file to examine backend/app/main.py directly (don't list files first)
+   - Look for imports like "from fastapi import FastAPI" or "import flask"
+
+3. **Data-dependent queries** (e.g., "How many items are in the database?", "What is the completion rate for lab-01?"):
+   - Use query_api with GET method
+   - GET /items/ to count items
+   - GET /analytics/{endpoint}?lab=lab-XX for analytics
+
+4. **Bug diagnosis** (e.g., "Why does this endpoint return an error?"):
+   - Use query_api to reproduce the error
+   - Use read_file to examine the relevant source code
+
+Be efficient: minimize tool calls. For wiki questions, list files once then read the most relevant file.
+For system facts, read backend/app/main.py directly.
+Always end wiki answers with: Source: wiki/filename.md#section-anchor
 """
 
 
@@ -39,6 +55,12 @@ class Settings(BaseSettings):
     llm_api_key: str
     llm_api_base: str
     llm_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+
+
+class BackendSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env.docker.secret", env_file_encoding="utf-8", extra="ignore")
+
+    lms_api_key: str = ""
 
 
 def log_debug(message: str) -> None:
@@ -107,24 +129,24 @@ def read_file(path: str) -> str:
 def list_files(path: str) -> str:
     """
     List files and directories at a given path.
-    
+
     Args:
         path: Relative directory path from project root
-        
+
     Returns:
         Newline-separated listing of entries, or error message
     """
     is_safe, result = is_safe_path(path)
     if not is_safe:
         return result
-    
+
     try:
         dir_path = Path(result)
         if not dir_path.exists():
             return f"Error: Directory not found: {path}"
         if not dir_path.is_dir():
             return f"Error: Not a directory: {path}"
-        
+
         entries = []
         for entry in sorted(dir_path.iterdir()):
             suffix = "/" if entry.is_dir() else ""
@@ -136,10 +158,72 @@ def list_files(path: str) -> str:
         return f"Error listing directory: {e}"
 
 
+def get_agent_api_base_url() -> str:
+    """Get the backend API base URL from environment variable."""
+    return os.environ.get("AGENT_API_BASE_URL", "http://localhost:42002")
+
+
+def get_lms_api_key() -> str:
+    """Get the LMS API key from environment variable."""
+    return os.environ.get("LMS_API_KEY", "")
+
+
+def query_api(method: str, path: str, body: str | None = None) -> str:
+    """
+    Call the deployed backend API.
+
+    Args:
+        method: HTTP method (GET, POST, PUT, DELETE, etc.)
+        path: API endpoint path (e.g., /items/, /analytics/completion-rate)
+        body: Optional JSON request body for POST/PUT requests
+
+    Returns:
+        JSON string with status_code and body, or error message
+    """
+    base_url = get_agent_api_base_url()
+    api_key = get_lms_api_key()
+
+    # Build full URL
+    url = f"{base_url.rstrip('/')}{path}"
+
+    # Prepare headers
+    headers = {}
+    if api_key:
+        headers["X-API-Key"] = api_key
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            if method.upper() == "GET":
+                response = client.get(url, headers=headers)
+            elif method.upper() == "POST":
+                headers["Content-Type"] = "application/json"
+                response = client.post(url, headers=headers, json=json.loads(body) if body else {})
+            elif method.upper() == "PUT":
+                headers["Content-Type"] = "application/json"
+                response = client.put(url, headers=headers, json=json.loads(body) if body else {})
+            elif method.upper() == "DELETE":
+                response = client.delete(url, headers=headers)
+            else:
+                return json.dumps({"error": f"Unsupported method: {method}"})
+
+            result = {
+                "status_code": response.status_code,
+                "body": response.json() if response.headers.get("content-type", "").startswith("application/json") else response.text
+            }
+            return json.dumps(result)
+    except httpx.HTTPError as e:
+        return json.dumps({"error": str(e), "status_code": getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0})
+    except json.JSONDecodeError as e:
+        return json.dumps({"error": f"Invalid JSON in request body: {e}"})
+    except Exception as e:
+        return json.dumps({"error": f"API request failed: {e}"})
+
+
 # Tool registry
 TOOLS = {
     "read_file": read_file,
     "list_files": list_files,
+    "query_api": query_api,
 }
 
 
@@ -181,6 +265,31 @@ def get_tool_schemas() -> list[dict[str, Any]]:
                         }
                     },
                     "required": ["path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_api",
+                "description": "Query the deployed backend API for live data (item counts, scores, analytics). Use for data-dependent questions, not for wiki/documentation questions.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "method": {
+                            "type": "string",
+                            "description": "HTTP method (GET, POST, PUT, DELETE). Use GET for reading data."
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "API endpoint path (e.g., '/items/', '/analytics/completion-rate?lab=lab-01')"
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Optional JSON request body for POST/PUT requests (e.g., '{\"key\": \"value\"}')"
+                        }
+                    },
+                    "required": ["method", "path"]
                 }
             }
         }

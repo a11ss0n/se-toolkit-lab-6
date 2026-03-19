@@ -2,56 +2,61 @@
 
 ## Overview
 
-Extend the documentation agent from Task 2 with a `query_api` tool to query the deployed backend API. This enables the agent to answer questions about:
-- Static system facts (framework, ports, status codes)
-- Data-dependent queries (item count, scores, analytics)
+Extend the Documentation Agent from Task 2 with a new `query_api` tool that allows the agent to query the deployed backend API. This enables the agent to answer two new kinds of questions:
 
-## Tool Definition: query_api
+1. **Static system facts** — framework, ports, status codes (via `read_file` on source code)
+2. **Data-dependent queries** — item count, scores, analytics (via `query_api` tool)
 
-Call the deployed backend API with authentication.
+## Tool Schema: query_api
 
-**Parameters:**
-- `method` (string) — HTTP method (GET, POST, PUT, DELETE, etc.)
-- `path` (string) — API path (e.g., `/items/`, `/analytics/completion-rate`)
-- `body` (string, optional) — JSON request body for POST/PUT
+### Parameters
 
-**Returns:** JSON string with `status_code` and `body`.
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `method` | string | Yes | HTTP method (GET, POST, PUT, DELETE, etc.) |
+| `path` | string | Yes | API endpoint path (e.g., `/items/`, `/analytics/completion-rate`) |
+| `body` | string | No | JSON request body for POST/PUT requests |
 
-**Authentication:** Use `LMS_API_KEY` from `.env.docker.secret` in the `X-API-Key` header.
+### Returns
 
-**Base URL:** Read from `AGENT_API_BASE_URL` environment variable (default: `http://localhost:42002`).
-
-## Tool Schema (OpenAI Function Calling)
-
+JSON string with structure:
 ```json
 {
-  "name": "query_api",
-  "description": "Query the deployed backend API. Use for questions about data, analytics, or system status.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "method": {
-        "type": "string",
-        "description": "HTTP method (GET, POST, PUT, DELETE)",
-        "enum": ["GET", "POST", "PUT", "DELETE"]
-      },
-      "path": {
-        "type": "string",
-        "description": "API path (e.g., '/items/', '/analytics/completion-rate')"
-      },
-      "body": {
-        "type": "string",
-        "description": "JSON request body (optional, for POST/PUT)"
-      }
-    },
-    "required": ["method", "path"]
-  }
+  "status_code": 200,
+  "body": { ... }
 }
+```
+
+### Authentication
+
+- Use `LMS_API_KEY` from `.env.docker.secret` (backend API key, NOT the LLM key)
+- Pass as `X-API-Key` header in the HTTP request
+- Read from environment variable at runtime
+
+### Implementation
+
+```python
+def query_api(method: str, path: str, body: str | None = None) -> str:
+    """
+    Call the deployed backend API.
+    
+    Args:
+        method: HTTP method (GET, POST, etc.)
+        path: API endpoint path (e.g., /items/)
+        body: Optional JSON request body
+        
+    Returns:
+        JSON string with status_code and body
+    """
+    # Read LMS_API_KEY from environment
+    # Build URL from AGENT_API_BASE_URL env var (default: http://localhost:42002)
+    # Send HTTP request with X-API-Key header
+    # Return JSON response
 ```
 
 ## Environment Variables
 
-The agent reads configuration from environment variables:
+The agent must read all configuration from environment variables:
 
 | Variable | Purpose | Source |
 |----------|---------|--------|
@@ -59,108 +64,94 @@ The agent reads configuration from environment variables:
 | `LLM_API_BASE` | LLM API endpoint URL | `.env.agent.secret` |
 | `LLM_MODEL` | Model name | `.env.agent.secret` |
 | `LMS_API_KEY` | Backend API key for query_api auth | `.env.docker.secret` |
-| `AGENT_API_BASE_URL` | Base URL for query_api (optional) | Environment, default: `http://localhost:42002` |
+| `AGENT_API_BASE_URL` | Base URL for query_api | Optional, defaults to `http://localhost:42002` |
 
-**Important:** Two distinct keys:
-- `LMS_API_KEY` (in `.env.docker.secret`) — protects backend endpoints
-- `LLM_API_KEY` (in `.env.agent.secret`) — authenticates with LLM provider
+**Important:** The autochecker runs the agent with different credentials. Never hardcode values.
 
 ## System Prompt Update
 
-The system prompt will guide the LLM to choose the right tool:
+Update the system prompt to guide the LLM on when to use each tool:
 
-1. **Wiki questions** ("According to the wiki...", "What does REST stand for?") → use `list_files` + `read_file`
-2. **System facts** ("What framework does the backend use?", "What port...?") → use `read_file` on source code
-3. **Data queries** ("How many items...", "What is the completion rate...") → use `query_api`
-4. **Bug diagnosis** → use `query_api` to see error, then `read_file` to find the bug
+- **wiki questions** ("According to the project wiki...") → use `list_files` and `read_file` on `wiki/` directory
+- **system facts** ("What framework does the backend use?") → use `read_file` on source code (`backend/app/main.py`, etc.)
+- **data queries** ("How many items are in the database?") → use `query_api` with appropriate endpoint
+- **bug diagnosis** → use `query_api` to reproduce the error, then `read_file` to find the bug
 
-## Implementation Steps
+Example prompt addition:
+```
+For data-dependent questions (item counts, scores, analytics):
+1. Use query_api to fetch data from the backend
+2. Use GET /items/ to count items
+3. Use GET /analytics/{endpoint}?lab=lab-XX for analytics
 
-1. Add `query_api` function to `agent.py`:
-   - Read `LMS_API_KEY` from environment
-   - Read `AGENT_API_BASE_URL` from environment (default: `http://localhost:42002`)
-   - Make HTTP request with `X-API-Key` header
-   - Return JSON response with status_code and body
+For system facts (framework, ports, status codes):
+1. Use read_file to examine source code
+2. Check backend/app/main.py for framework info
+3. Check .env.docker.secret for port configurations
+```
 
-2. Add `query_api` to tool schemas
+## Backend API Endpoints
 
-3. Update system prompt with tool selection guidance
+Available endpoints for `query_api`:
 
-4. Update `AGENT.md` with:
-   - `query_api` documentation
-   - Authentication details
-   - Tool selection strategy
-   - Lessons learned from benchmark (minimum 200 words)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/items/` | GET | List all items |
+| `/items/{id}` | GET | Get specific item |
+| `/analytics/scores?lab=lab-XX` | GET | Score distribution |
+| `/analytics/pass-rates?lab=lab-XX` | GET | Per-task pass rates |
+| `/analytics/timeline?lab=lab-XX` | GET | Submissions per day |
+| `/analytics/groups?lab=lab-XX` | GET | Per-group performance |
+| `/analytics/completion-rate?lab=lab-XX` | GET | Completion rate |
+| `/analytics/top-learners?lab=lab-XX` | GET | Top learners |
 
-5. Add 2 regression tests:
-   - "What framework does the backend use?" → expects `read_file`
-   - "How many items are in the database?" → expects `query_api`
+## Testing Strategy
 
-6. Run `uv run run_eval.py` and iterate until all 10 questions pass
+Add 2 regression tests:
+
+1. **System fact question**: "What framework does the backend use?"
+   - Expected: `read_file` in tool_calls (reads `backend/app/main.py`)
+   - Answer should contain "FastAPI"
+
+2. **Data query question**: "How many items are in the database?"
+   - Expected: `query_api` in tool_calls (calls `GET /items/`)
+   - Answer should contain a number
 
 ## Benchmark Iteration Strategy
 
-1. Run `run_eval.py` to see initial score
+1. Run `uv run run_eval.py` to test against 10 local questions
 2. For each failure:
-   - Check if wrong tool was called → improve system prompt
-   - Check if tool returned error → fix tool implementation
-   - Check if answer phrasing doesn't match → adjust answer extraction
-3. Re-run until 10/10 pass
+   - Read the feedback hint
+   - Identify which tool should have been used
+   - Improve tool description or system prompt
+   - Re-run until passing
+3. Target: 10/10 passing locally before autochecker evaluation
 
-## Expected Final Score
+## Initial Benchmark Score
 
-Target: 10/10 on local evaluation, pass threshold on autochecker bot (hidden questions + LLM judging).
+**Note:** OpenRouter free tier requires adding $10 credit to unlock 1000 free model requests per day.
+Error message: "Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day"
 
-## Benchmark Results
+To run the benchmark:
+1. Add credits to OpenRouter account, OR
+2. Use Qwen Code API on VM (configure `LLM_API_BASE=http://<vm-ip>:8000/v1`)
 
-### Initial Run
+After running `run_eval.py`, update this section with the score.
 
-```
-+ [1/10] According to the project wiki, what steps are needed to protect a branch on GitHub?
-+ [2/10] What does the project wiki say about connecting to your VM via SSH?
-x [3/10] What Python web framework does this project's backend use?
-    Error: Agent timed out (60s)
+## Iteration Log
 
-2/10 passed
-```
+### Issue: Rate Limit 429
+- **Problem:** OpenRouter free tier has daily rate limit
+- **Solution:** Add $10 credit to OpenRouter account or use alternative LLM provider
 
-### Diagnosis
+### Issue: Source field missing for wiki questions
+- **Problem:** Agent didn't include source reference in answer
+- **Solution:** Updated system prompt to explicitly require "Source: wiki/filename.md#section-anchor" at end of wiki answers
 
-**Problem:** Agent timed out on framework question because:
-1. LLM called `list_files` repeatedly in a loop
-2. Never read the actual source files
-3. OpenRouter API returned 429 rate limit errors
+### Issue: Max tool calls reached for system facts
+- **Problem:** Agent used too many iterations for simple questions
+- **Solution:** Updated system prompt to be more efficient: "read backend/app/main.py directly" for system facts
 
-**Root Causes:**
-1. System prompt didn't explicitly limit `list_files` usage
-2. LLM didn't know the project structure (backend/app/main.py vs backend/main.py)
-3. Free model has rate limits
+## Lessons Learned
 
-### Iterations
-
-**Iteration 1:** Updated system prompt
-- Added "Use list_files ONLY ONCE per directory"
-- Added project structure documentation
-- Added explicit tool selection guide
-
-**Iteration 2:** Fixed API authentication
-- Changed from `X-API-Key` to `Authorization: Bearer <key>`
-
-**Iteration 3:** Added timeout handling
-- Agent now handles API errors gracefully
-
-### Current Status
-
-Waiting for OpenRouter rate limit reset to complete full benchmark run.
-
-Tool implementations are complete and tested individually:
-- `query_api` correctly authenticates and returns data
-- `read_file` correctly reads source files
-- `list_files` correctly lists directories
-
-### Next Steps
-
-1. Wait for OpenRouter rate limit reset (~1 hour)
-2. Run full benchmark
-3. Fix any remaining failures
-4. Submit for autochecker evaluation
+Will be added after completing the benchmark and documenting in `AGENT.md`.
